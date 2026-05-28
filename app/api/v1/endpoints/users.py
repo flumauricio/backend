@@ -1,17 +1,15 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_current_active_user, get_user_service
 from app.core.rbac import Role, require_role
 from app.models.user import User
-from app.schemas.user import UserRead, UserUpdate, UserUpdateAdmin
+from app.schemas.user import UserPage, UserRead, UserUpdate, UserUpdateAdmin
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-
-# ─── Current user ─────────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserRead, summary="Get current user profile")
 async def get_me(current_user: User = Depends(get_current_active_user)):
@@ -27,35 +25,39 @@ async def update_me(
     return await user_service.update(current_user, payload)
 
 
-# ─── Admin-only ───────────────────────────────────────────────────────────────
-
 @router.get(
     "/",
-    response_model=list[UserRead],
-    summary="List all users [admin]",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    response_model=UserPage,
+    summary="List users [admin]",
 )
 async def list_users(
     user_service: UserService = Depends(get_user_service),
-    skip: int = 0,
-    limit: int = 50,
+    _actor: User = Depends(require_role(Role.ADMIN)),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    role: Role | None = None,
+    is_active: bool | None = None,
 ):
-    # Minimal implementation — extend with pagination helper later
-    from sqlalchemy import select
-    from app.database.session import AsyncSessionLocal
-    # NOTE: replace with proper paginated query in service layer
-    return []
+    items = await user_service.list_paginated(
+        skip=skip,
+        limit=limit,
+        role=role,
+        is_active=is_active,
+    )
+    total = await user_service.count(role=role, is_active=is_active)
+
+    return UserPage.build(items=items, total=total, skip=skip, limit=limit)
 
 
 @router.get(
     "/{user_id}",
     response_model=UserRead,
     summary="Get user by ID [moderator+]",
-    dependencies=[Depends(require_role(Role.MODERATOR))],
 )
 async def get_user(
     user_id: uuid.UUID,
     user_service: UserService = Depends(get_user_service),
+    _actor: User = Depends(require_role(Role.MODERATOR)),
 ):
     return await user_service.get_by_id(user_id)
 
@@ -64,12 +66,12 @@ async def get_user(
     "/{user_id}",
     response_model=UserRead,
     summary="Update user [admin]",
-    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def update_user(
     user_id: uuid.UUID,
     payload: UserUpdateAdmin,
     user_service: UserService = Depends(get_user_service),
+    _actor: User = Depends(require_role(Role.ADMIN)),
 ):
     user = await user_service.get_by_id(user_id)
     return await user_service.update(user, payload)
@@ -79,11 +81,25 @@ async def update_user(
     "/{user_id}",
     status_code=204,
     summary="Deactivate user [admin]",
-    dependencies=[Depends(require_role(Role.ADMIN))],
 )
 async def deactivate_user(
     user_id: uuid.UUID,
     user_service: UserService = Depends(get_user_service),
+    _actor: User = Depends(require_role(Role.ADMIN)),
 ):
     user = await user_service.get_by_id(user_id)
     await user_service.deactivate(user)
+
+
+@router.post(
+    "/{user_id}/reactivate",
+    response_model=UserRead,
+    summary="Reactivate user [admin]",
+)
+async def reactivate_user(
+    user_id: uuid.UUID,
+    user_service: UserService = Depends(get_user_service),
+    _actor: User = Depends(require_role(Role.ADMIN)),
+):
+    user = await user_service.get_by_id(user_id)
+    return await user_service.reactivate(user)

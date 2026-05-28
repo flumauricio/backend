@@ -3,7 +3,6 @@ RBAC — Role-Based Access Control
 Roles (least → most privileged): user < moderator < admin
 """
 from enum import StrEnum
-from functools import wraps
 
 from fastapi import Depends
 
@@ -22,31 +21,45 @@ ROLE_HIERARCHY: list[Role] = [Role.USER, Role.MODERATOR, Role.ADMIN]
 
 def role_rank(role: Role) -> int:
     try:
-        return ROLE_HIERARCHY.index(role)
+        return ROLE_HIERARCHY.index(Role(role))
     except ValueError:
         return -1
 
 
-def has_min_role(user_role: Role, required_role: Role) -> bool:
+def has_min_role(user_role: str | Role, required_role: Role) -> bool:
     return role_rank(user_role) >= role_rank(required_role)
 
 
 def require_role(minimum_role: Role):
     """
-    FastAPI dependency factory.
+    FastAPI dependency factory — enforces role hierarchy.
+
+    Injects the authenticated, active user into the route so it can be
+    used directly without a second Depends(get_current_active_user).
 
     Usage:
-        @router.get("/admin-only")
-        async def admin_route(current_user = Depends(require_role(Role.ADMIN))):
+        # dependency-only (access check, user discarded)
+        @router.get("/admin", dependencies=[Depends(require_role(Role.ADMIN))])
+
+        # user available in route
+        @router.get("/mod-area")
+        async def mod_route(actor: User = Depends(require_role(Role.MODERATOR))):
             ...
     """
-    from app.api.dependencies import get_current_active_user  # late import to avoid circular
+    # Late import avoids the circular:
+    #   rbac → dependencies → rbac
+    from app.api.dependencies import get_current_active_user
 
-    async def _check(current_user=Depends(get_current_active_user)):
-        if not has_min_role(Role(current_user.role), minimum_role):
+    async def _check_role(current_user=Depends(get_current_active_user)):
+        if not has_min_role(current_user.role, minimum_role):
             raise PermissionDeniedException(
-                f"Role '{minimum_role}' or higher required."
+                f"Requires role '{minimum_role}' or higher "
+                f"(current: '{current_user.role}')."
             )
         return current_user
 
-    return _check
+    # Give the inner function a unique name so FastAPI's dependency cache
+    # treats each require_role(X) call as a distinct dependency.
+    _check_role.__name__ = f"_require_{minimum_role}"
+
+    return _check_role
