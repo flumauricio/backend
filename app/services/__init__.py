@@ -3,4 +3,9 @@ from app.services.plan_service import PlanService
 from app.services.user_limits_service import UserLimitsService
 from app.services.user_service import UserService
 
-__all__ = ["UserService", "AuthService", "PlanService", "UserLimitsService"]
+__all__ = [
+    "AuthService",
+    "PlanService",
+    "UserLimitsService",
+    "UserService",
+]

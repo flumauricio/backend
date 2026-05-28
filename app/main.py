@@ -7,6 +7,7 @@ from fastapi.responses import ORJSONResponse
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
+from app.core.seed import run_seed
 from app.database.redis import close_redis_pool, get_redis_pool
 from app.websocket.router import router as ws_router
 
@@ -24,8 +25,15 @@ async def lifespan(app: FastAPI):
         version=settings.APP_VERSION,
         environment=settings.ENVIRONMENT,
     )
-    await get_redis_pool()  # warm up Redis pool
+
+    # Warm up infrastructure connections before seed so the DB pool is ready.
+    await get_redis_pool()
+
+    # Run idempotent startup seed (Free plan + superuser + superuser limits).
+    await run_seed()
+
     yield
+
     logger.info("Shutting down")
     await close_redis_pool()
 
