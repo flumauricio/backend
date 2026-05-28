@@ -1,4 +1,5 @@
 from jose import JWTError
+from uuid import UUID
 
 from app.core.exceptions import BadRequestException, CredentialsException
 from app.core.logging import get_logger
@@ -32,7 +33,7 @@ class AuthService:
         if payload.get("type") != "refresh":
             raise CredentialsException()
 
-        user = await self.user_service.get_by_email(payload["sub"])
+        user = await self.user_service.get_by_id(UUID(payload["sub"]))
         if not user or not user.is_active:
             raise CredentialsException()
 
@@ -44,5 +45,5 @@ class AuthService:
             subject=str(user.id),
             extra_claims={"role": user.role, "email": user.email},
         )
-        refresh = create_refresh_token(subject=str(user.email))
+        refresh = create_refresh_token(subject=str(user.id))
         return Token(access_token=access, refresh_token=refresh)

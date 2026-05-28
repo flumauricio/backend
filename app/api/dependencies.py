@@ -33,6 +33,10 @@ async def get_current_user(
         raise CredentialsException()
 
     user = await user_service.get_by_id(uuid.UUID(user_id))
+
+    if not user:
+        raise CredentialsException()
+
     return user
 
 
