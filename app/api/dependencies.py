@@ -14,14 +14,11 @@ from app.services.user_service import UserService
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
-# ─── DB session (re-exported for use in other modules) ────────────────────────
+# ─── DB session re-export ─────────────────────────────────────────────────────
+# Thin wrapper so endpoint modules depend on app.api.dependencies rather than
+# app.database.session directly, keeping the import graph clean.
 
 async def get_db_session(db: AsyncSession = Depends(get_db)) -> AsyncSession:
-    """
-    Thin wrapper around get_db so other modules can depend on this
-    instead of importing get_db directly from app.database.session.
-    Keeps the import graph clean.
-    """
     return db
 
 
