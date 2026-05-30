@@ -6,8 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import ConflictException, NotFoundException
 from app.core.logging import get_logger
 from app.core.security import get_password_hash, verify_password
+from app.models.plan import Plan
 from app.models.user import User
+from app.models.user_limits import UserLimits
 from app.schemas.user import UserCreate, UserUpdate
+from app.services.plan_service import DEFAULT_PLAN_NAME
 
 logger = get_logger(__name__)
 
@@ -75,6 +78,49 @@ class UserService:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
+    # ─── Default plan assignment ──────────────────────────────────────────────
+
+    async def _assign_default_free_plan(self, user: User) -> None:
+        """
+        Ensures a newly-created user gets UserLimits linked to the Free plan.
+
+        If the Free plan is unexpectedly missing, user creation must still
+        succeed; the seed/backfill can repair this later.
+        """
+        try:
+            existing = await self.db.execute(
+                select(UserLimits).where(UserLimits.user_id == user.id)
+            )
+            if existing.scalar_one_or_none() is not None:
+                return
+
+            result = await self.db.execute(
+                select(Plan).where(Plan.name == DEFAULT_PLAN_NAME)
+            )
+            free_plan = result.scalar_one_or_none()
+            if free_plan is None:
+                logger.warning(
+                    "Default Free plan not found while assigning new user limits",
+                    user_id=str(user.id),
+                )
+                return
+
+            limits = UserLimits(user_id=user.id, plan_id=free_plan.id)
+            self.db.add(limits)
+            await self.db.flush()
+            logger.info(
+                "Default Free plan assigned to new user",
+                user_id=str(user.id),
+                plan_id=str(free_plan.id),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not assign default Free plan to new user",
+                user_id=str(user.id),
+                error=str(exc),
+                exc_info=True,
+            )
+
     # ─── Mutations ────────────────────────────────────────────────────────────
 
     async def create(self, payload: UserCreate, role: str = "user") -> User:
@@ -90,6 +136,9 @@ class UserService:
         self.db.add(user)
         await self.db.flush()
         await self.db.refresh(user)
+
+        await self._assign_default_free_plan(user)
+
         logger.info("User created", user_id=str(user.id), email=user.email, role=role)
         return user
 

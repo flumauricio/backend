@@ -1,19 +1,19 @@
 import uuid
-from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.models.plan import Plan
 from app.models.user_limits import UserLimits
 from app.schemas.user_limits import EffectiveUserLimitsRead, UserLimitsUpdate
+from app.services.plan_service import DEFAULT_PLAN_NAME
 
 logger = get_logger(__name__)
 
-# ─── Hardcoded fallback defaults (Free / no plan) ─────────────────────────────
-# Override these once you add a "Free" plan to the DB.
+# ─── Emergency fallback defaults ─────────────────────────────────────────────
+# Used only if the Free plan is unexpectedly absent.
 _FREE_DEFAULTS: dict[str, int] = {
     "cloud_storage_mb": 512,
     "max_bots": 1,
@@ -49,18 +49,26 @@ class UserLimitsService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_default_free_plan(self) -> Plan | None:
+        result = await self.db.execute(
+            select(Plan).where(Plan.name == DEFAULT_PLAN_NAME)
+        )
+        return result.scalar_one_or_none()
+
     # ─── Effective limits (resolved) ──────────────────────────────────────────
 
     async def get_effective(self, user_id: uuid.UUID) -> EffectiveUserLimitsRead:
         """
         Resolves the effective limits for a user:
             1. Per-user override (non-null column on UserLimits)
-            2. Plan value (if plan is assigned)
-            3. Hardcoded free-tier default
+            2. Assigned plan value
+            3. System Free plan value
+            4. Emergency hardcoded fallback
 
         Returns an EffectiveUserLimitsRead with a `sources` dict for transparency.
         """
         row = await self.get_row_by_user(user_id)
+        free_plan = await self._get_default_free_plan()
 
         resolved: dict[str, int] = {}
         sources: dict[str, str] = {}
@@ -68,6 +76,7 @@ class UserLimitsService:
         for field in _LIMIT_FIELDS:
             override = getattr(row, field, None) if row else None
             plan_val = getattr(row.plan, field, None) if (row and row.plan) else None
+            free_val = getattr(free_plan, field, None) if free_plan else None
             default_val = _FREE_DEFAULTS[field]
 
             if override is not None:
@@ -76,14 +85,19 @@ class UserLimitsService:
             elif plan_val is not None:
                 resolved[field] = plan_val
                 sources[field] = "plan"
+            elif free_val is not None:
+                resolved[field] = free_val
+                sources[field] = "free_default"
             else:
                 resolved[field] = default_val
-                sources[field] = "default"
+                sources[field] = "fallback"
+
+        effective_plan = row.plan if (row and row.plan) else free_plan
 
         return EffectiveUserLimitsRead(
             user_id=user_id,
-            plan_id=row.plan_id if row else None,
-            plan_name=row.plan.name if (row and row.plan) else None,
+            plan_id=effective_plan.id if effective_plan else None,
+            plan_name=effective_plan.name if effective_plan else None,
             sources=sources,
             **resolved,
         )
