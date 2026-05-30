@@ -1,11 +1,11 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_current_active_user, get_db_session, get_user_service
 from app.core.rbac import Role, require_role
 from app.models.user import User
-from app.schemas.user import UserRead, UserUpdate, UserUpdateAdmin
+from app.schemas.user import UserPage, UserRead, UserUpdate, UserUpdateAdmin
 from app.schemas.user_limits import EffectiveUserLimitsRead, UserLimitsRead, UserLimitsUpdate
 from app.services.user_limits_service import UserLimitsService
 from app.services.user_service import UserService
@@ -138,17 +138,26 @@ async def get_user(
 
 @router.get(
     "/",
-    response_model=list[UserRead],
-    summary="List all users [admin]",
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    response_model=UserPage,
+    summary="List users [admin]",
 )
 async def list_users(
     user_service: UserService = Depends(get_user_service),
-    skip: int = 0,
-    limit: int = 50,
-) -> list:
-    return []
+    _actor: User = Depends(require_role(Role.ADMIN)),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    role: Role | None = None,
+    is_active: bool | None = None,
+):
+    items = await user_service.list_paginated(
+        skip=skip,
+        limit=limit,
+        role=role,
+        is_active=is_active,
+    )
+    total = await user_service.count(role=role, is_active=is_active)
 
+    return UserPage.build(items=items, total=total, skip=skip, limit=limit)
 
 @router.patch(
     "/{user_id}",

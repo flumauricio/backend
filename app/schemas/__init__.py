@@ -1,3 +1,4 @@
+from app.schemas.admin import AdminStatsResponse
 from app.schemas.bot import BotCreate, BotListResponse, BotRead, BotUpdate
 from app.schemas.common import MessageResponse, PaginatedResponse
 from app.schemas.token import RefreshTokenRequest, Token, TokenPayload
@@ -19,6 +20,8 @@ __all__ = [
     "BotUpdate",
     "BotRead",
     "BotListResponse",
+    # admin
+    "AdminStatsResponse",
     # common
     "MessageResponse",
     "PaginatedResponse",
