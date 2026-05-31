@@ -8,6 +8,7 @@ Execution order inside a single transaction:
   2. Ensure superuser (admin) exists.
   3. Ensure superuser has a UserLimits row linked to the Free plan.
   4. Backfill UserLimits for any existing users without limits.
+  5. Ensure default local storage volume exists.  ← V1 addition
 
 Rules:
   • Every step is guarded by a "does it already exist?" check — safe to
@@ -49,10 +50,6 @@ _FREE_PLAN: dict = {
 # ─── Individual seed steps ────────────────────────────────────────────────────
 
 async def _seed_free_plan(db: AsyncSession) -> Plan:
-    """
-    Returns the Free plan, creating it if it doesn't exist.
-    Keyed on name='Free'.
-    """
     result = await db.execute(select(Plan).where(Plan.name == DEFAULT_PLAN_NAME))
     plan = result.scalar_one_or_none()
 
@@ -78,21 +75,13 @@ async def _seed_free_plan(db: AsyncSession) -> Plan:
 
 
 async def _seed_superuser(db: AsyncSession) -> User:
-    """
-    Returns the superuser, creating it if it doesn't exist.
-    Keyed on FIRST_SUPERUSER_EMAIL — will not create a duplicate.
-    """
     result = await db.execute(
         select(User).where(User.email == settings.FIRST_SUPERUSER_EMAIL)
     )
     user = result.scalar_one_or_none()
 
     if user is not None:
-        logger.info(
-            "Seed: Superuser already exists",
-            user_id=str(user.id),
-            email=user.email,
-        )
+        logger.info("Seed: Superuser already exists", user_id=str(user.id))
         return user
 
     user = User(
@@ -106,56 +95,31 @@ async def _seed_superuser(db: AsyncSession) -> User:
     db.add(user)
     await db.flush()
     await db.refresh(user)
-    logger.info(
-        "Seed: Superuser created",
-        user_id=str(user.id),
-        email=user.email,
-    )
+    logger.info("Seed: Superuser created", user_id=str(user.id))
     return user
 
 
 async def _seed_superuser_limits(
     db: AsyncSession, user: User, plan: Plan
 ) -> UserLimits:
-    """
-    Ensures the superuser has a UserLimits row linked to the Free plan.
-    If the row already exists, leaves it untouched (admin may have
-    manually assigned a better plan — we don't want to downgrade them).
-    """
     result = await db.execute(
         select(UserLimits).where(UserLimits.user_id == user.id)
     )
     limits = result.scalar_one_or_none()
 
     if limits is not None:
-        logger.info(
-            "Seed: Superuser limits already exist",
-            user_id=str(user.id),
-            plan_id=str(limits.plan_id),
-        )
+        logger.info("Seed: Superuser limits already exist", user_id=str(user.id))
         return limits
 
-    limits = UserLimits(
-        user_id=user.id,
-        plan_id=plan.id,
-        # All override fields left null → values inherited from plan
-    )
+    limits = UserLimits(user_id=user.id, plan_id=plan.id)
     db.add(limits)
     await db.flush()
     await db.refresh(limits)
-    logger.info(
-        "Seed: Superuser limits created",
-        user_id=str(user.id),
-        plan_id=str(plan.id),
-    )
+    logger.info("Seed: Superuser limits created", user_id=str(user.id))
     return limits
 
 
 async def _backfill_missing_user_limits(db: AsyncSession, plan: Plan) -> int:
-    """
-    Creates UserLimits rows for existing users that still do not have one.
-    Does not overwrite any existing limits or assigned plans.
-    """
     stmt = (
         select(User)
         .outerjoin(UserLimits, UserLimits.user_id == User.id)
@@ -170,9 +134,8 @@ async def _backfill_missing_user_limits(db: AsyncSession, plan: Plan) -> int:
     if users_without_limits:
         await db.flush()
         logger.info(
-            "Seed: UserLimits backfilled for users without limits",
+            "Seed: UserLimits backfilled",
             count=len(users_without_limits),
-            plan_id=str(plan.id),
         )
     else:
         logger.info("Seed: No missing UserLimits rows to backfill")
@@ -180,16 +143,17 @@ async def _backfill_missing_user_limits(db: AsyncSession, plan: Plan) -> int:
     return len(users_without_limits)
 
 
+async def _seed_default_storage_volume(db: AsyncSession) -> None:
+    """Ensure the default local storage volume exists (Storage V1)."""
+    # Late import to avoid circular at module load
+    from app.services.storage_volume_service import StorageVolumeService
+    svc = StorageVolumeService(db)
+    await svc.ensure_default_volume()
+
+
 # ─── Public entrypoint ────────────────────────────────────────────────────────
 
 async def run_seed() -> None:
-    """
-    Main seed entrypoint — called from the app lifespan.
-
-    All steps run inside a single transaction.
-    On failure the transaction is rolled back atomically,
-    leaving the DB in a consistent state.
-    """
     logger.info("Seed: starting")
 
     try:
@@ -199,28 +163,18 @@ async def run_seed() -> None:
                 user = await _seed_superuser(db)
                 await _seed_superuser_limits(db, user, plan)
                 await _backfill_missing_user_limits(db, plan)
+                await _seed_default_storage_volume(db)   # ← V1 addition
                 await db.commit()
                 logger.info("Seed: completed successfully")
 
             except Exception:
                 await db.rollback()
-                raise  # let the outer except decide what to do
+                raise
 
     except Exception as exc:
-        logger.error(
-            "Seed: FAILED",
-            error=str(exc),
-            exc_info=True,
-        )
+        logger.error("Seed: FAILED", error=str(exc), exc_info=True)
         if settings.is_development:
-            # Crash loudly in development so the issue is impossible to miss.
             raise RuntimeError(
                 f"Startup seed failed in development environment: {exc}"
             ) from exc
-
-        # In staging/production: log and carry on.
-        # A partial seed is recoverable; a crashed API node is not.
-        logger.warning(
-            "Seed: continuing startup despite seed failure "
-            "(non-development environment)"
-        )
+        logger.warning("Seed: continuing startup despite seed failure")
